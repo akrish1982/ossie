@@ -678,50 +678,75 @@ Vendors may expose their own feature through extensions, however the default for
 
 ### The ICEBERG Dialect
 
-Apache Iceberg does not use SQL text for its expressions. Instead, Iceberg's public
-[Expressions API](https://iceberg.apache.org/javadoc/latest/org/apache/iceberg/expressions/Expressions.html)
-represents predicates and partition transforms as structured function calls over column
-references and literals. The `ICEBERG` dialect lets an Ossie expression carry this native
-form (e.g. for partition specs, row filters, or predicate pushdown) alongside a portable
-`ANSI_SQL` / `OSSIE_SQL_2026` equivalent, without asking implementations to translate SQL
-text into Iceberg's expression tree at read time.
+Expressions in the `ICEBERG` dialect are boolean predicate strings in the form accepted by
+PyIceberg's expression parser
+([`pyiceberg.expressions.parser.parse`](https://github.com/apache/iceberg-python/blob/main/pyiceberg/expressions/parser.py)).
+That parser is the reference reader for this dialect: a string is a valid `ICEBERG`
+expression if and only if it parses there. The dialect lets an Ossie expression carry an
+Iceberg row filter (e.g. for scan planning or predicate pushdown) alongside a portable
+`ANSI_SQL` / `OSSIE_SQL_2026` equivalent.
 
-Because `ICEBERG` expressions are not SQL, implementations MUST NOT attempt to parse them
-with a SQL parser; they are opaque strings using Iceberg's function-call syntax, skipped
-from SQL validation the same way `MDX`, `TABLEAU`, `MAQL`, `SIGMA`, `THOUGHTSPOT`, and `DAX`
-are.
+The syntax is SQL-like but is not SQL: it is a small predicate grammar with forms such as
+`IS NAN` that SQL parsers do not accept. Implementations MUST NOT validate `ICEBERG`
+expressions with a SQL parser; they are skipped from SQL validation the same way `MDX`,
+`TABLEAU`, `MAQL`, `SIGMA`, `THOUGHTSPOT`, and `DAX` are.
 
-**Partition transforms** (used in partition specs):
+**Supported predicates.** Keywords are case-insensitive.
 
-| Transform | Description |
+| Predicate | Syntax |
 | :---- | :---- |
-| `identity(col)` | Partition by the column's raw value |
-| `bucket(N, col)` | Hash into `N` buckets |
-| `truncate(W, col)` | Truncate strings/numbers to width `W` |
-| `year(col)` / `month(col)` / `day(col)` / `hour(col)` | Partition by a date/time granularity |
-| `void(col)` | Drop the column from the partition spec |
+| Comparison | `col = v`, `col != v`, `col < v`, `col <= v`, `col > v`, `col >= v` (`==` and `<>` are accepted as aliases of `=` and `!=`) |
+| Range | `col BETWEEN low AND high` (inclusive on both ends) |
+| Null check | `col IS NULL`, `col IS NOT NULL` |
+| NaN check | `col IS NAN`, `col IS NOT NAN` |
+| Set membership | `col IN (v1, v2, ...)`, `col NOT IN (v1, v2, ...)` |
+| Prefix match | `col LIKE 'prefix%'`, `col NOT LIKE 'prefix%'` |
+| Constant | `true`, `false` |
+| Boolean composition | `NOT p`, `p AND q`, `p OR q`, with parentheses for grouping; `NOT` binds tightest, then `AND`, then `OR` |
 
-**Predicate filters** (used in row filters / predicate pushdown):
+**Operands.**
 
-| Predicate | Description |
-| :---- | :---- |
-| `equal(col, v)` / `notEqual(col, v)` | Equality / inequality |
-| `lessThan(col, v)` / `lessThanOrEqual(col, v)` | Less-than comparisons |
-| `greaterThan(col, v)` / `greaterThanOrEqual(col, v)` | Greater-than comparisons |
-| `isNull(col)` / `notNull(col)` | Null checks |
-| `in(col, v1, v2, ...)` / `notIn(col, v1, v2, ...)` | Set membership |
-| `startsWith(col, prefix)` | String prefix match |
-| `and(p1, p2)` / `or(p1, p2)` / `not(p)` | Boolean composition of predicates |
+- A comparison is between one column and one literal. The literal may be written on either
+  side (`5 < amount` is the same as `amount > 5`); column-to-column comparisons such as
+  `a = b` are not supported.
+- Columns are unquoted identifiers (letters, digits, `_`, and `$`, not starting with a digit
+  or `$`) or double-quoted identifiers, with `.` separating the parts of a nested field
+  (`customer.address.city`).
+- Literals are single-quoted strings (a quote is escaped by doubling it, `'O''Brien'`),
+  integers, decimals, and `true` / `false`. There are no typed literals such as
+  `DATE '2026-01-01'`; dates and timestamps are written as strings and converted when the
+  predicate is bound to the column's type.
+- The values of an `IN` list must be non-empty and all of the same literal kind.
+- `LIKE` supports a single `%` wildcard at the end of the pattern only (starts-with). A
+  pattern with no wildcard is an equality test, and `\%` matches a literal `%`.
 
-Example declaring both a portable expression and its Iceberg partition-transform form:
+**Not supported.**
+
+- Function calls of any kind. In particular, partition transforms such as `month(col)`,
+  `bucket(16, col)`, or `truncate(4, col)` cannot be written in this dialect; they belong to
+  an Iceberg table's partition spec, not to its expression strings.
+- Arithmetic, casts, and any other expression that computes a value. `ICEBERG` expressions
+  are predicates only, so the dialect applies only where a boolean expression is expected.
+- `NOT BETWEEN`, comparisons against `NULL` (use `IS NULL` / `IS NOT NULL`), and `LIKE`
+  patterns with a leading or embedded wildcard.
+
+Examples:
+
+```
+order_date >= '2026-01-01' AND region = 'EMEA'
+customer_id IS NOT NULL AND (status = 'open' OR status = 'pending')
+amount BETWEEN 10 AND 100 AND sku LIKE 'AB%'
+```
+
+Declaring both a portable expression and its Iceberg form:
 
 ```
 expression:
   dialects:
     - dialect: ANSI_SQL
-      expression: DATE_TRUNC('month', order_date)
+      expression: order_date >= DATE '2026-01-01' AND region = 'EMEA'
     - dialect: ICEBERG
-      expression: month(order_date)
+      expression: order_date >= '2026-01-01' AND region = 'EMEA'
 ```
 
 ---

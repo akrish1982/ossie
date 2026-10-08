@@ -62,7 +62,7 @@ Supported SQL and expression language dialects for metrics and field definitions
 | `THOUGHTSPOT` | ThoughtSpot formula language |
 | `DAX` | Data Analysis Expressions (Power BI / Analysis Services) |
 | `OSSIE_SQL_2026` | Ossie's portable SQL expression language, defined in `expression_language.md` |
-| `ICEBERG` | Apache Iceberg expression language (partition transforms and predicates) |
+| `ICEBERG` | Apache Iceberg predicate strings, in the form accepted by PyIceberg's expression parser |
 
 ### Data types
 
