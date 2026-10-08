@@ -36,6 +36,10 @@ Validates Ossie YAML or JSON documents containing one semantic model against:
 4. Relationship column arity (from_columns and to_columns lengths match)
 5. SQL syntax (using sqlglot)
 
+Ontology documents (--schema ontology/ontology.json) are checked for unique
+concept and relationship names, and for extends, identify_by, roles and QName
+prefixes that resolve to something declared.
+
 Usage:
     python validation/validate.py <yaml_file>
     python validation/validate.py <yaml_file> --schema ontology/ontology.json
@@ -44,14 +48,16 @@ Usage:
 
 import json
 import sys
+from collections import Counter
 from collections.abc import Hashable
 from pathlib import Path
 
 try:
     import yaml
     from jsonschema import Draft202012Validator
-    from referencing import Registry, Resource
-    from referencing.exceptions import Unresolvable
+    from referencing import Registry
+    from referencing.exceptions import NoSuchResource, Unresolvable
+    from referencing.retrieval import to_cached_resource
     from yaml.constructor import ConstructorError
 except ImportError:
     print("Missing dependencies. Install with:")
@@ -83,6 +89,9 @@ DIALECT_MAP = {
 
 # Dialects that sqlglot cannot parse
 SKIP_SQL_VALIDATION = {"MDX", "TABLEAU", "MAQL", "SIGMA", "THOUGHTSPOT", "DAX", "ICEBERG"}
+
+# Concepts every ontology includes implicitly (ontology.md, "Built-in concepts")
+BUILT_IN_CONCEPTS = {"Any", "Boolean", "Date", "DateTime", "Decimal", "Float", "Integer", "String"}
 
 
 class ValidationWarning(str):
@@ -149,20 +158,34 @@ class UniqueKeyLoader(yaml.SafeLoader):
                 self._check_unique_keys(child, visited)
 
 
+# Ossie schemas reference one another by raw GitHub URL or canonical $id.
+# Resolve those URLs onto files in this checkout only when a reference needs
+# them. The decorator parses and caches each retrieved schema across calls.
+_REPO_ROOT = Path(__file__).parent.parent.resolve()
+_SCHEMA_BASES = (
+    "https://raw.githubusercontent.com/apache/ossie/main/",
+    "https://github.com/apache/ossie/",
+)
+
+
+@to_cached_resource()
+def _retrieve_local_schema(uri: str) -> str:
+    """Read a referenced Ossie schema from this checkout."""
+    for base in _SCHEMA_BASES:
+        if uri.startswith(base):
+            path = (_REPO_ROOT / uri[len(base):]).resolve()
+            if path.is_relative_to(_REPO_ROOT):
+                return path.read_text(encoding="utf-8")
+            break
+    raise NoSuchResource(ref=uri)
+
+
+_SCHEMA_REGISTRY = Registry(retrieve=_retrieve_local_schema)
+
+
 def validate_schema(data: dict, schema: dict) -> list[str]:
-    """Validate against JSON Schema, resolving core references locally."""
-    core_path = Path(__file__).parent.parent / "core-spec" / "ossie-schema.json"
-    core = json.loads(core_path.read_text())
-    resource = Resource.from_contents(core)
-    # Ontology references use the raw URL; also register the canonical schema ID.
-    registry = Registry().with_resources([
-        (core["$id"], resource),
-        (
-            "https://raw.githubusercontent.com/apache/ossie/main/core-spec/ossie-schema.json",
-            resource,
-        ),
-    ])
-    validator = Draft202012Validator(schema, registry=registry)
+    """Validate against JSON Schema, resolving Ossie schema references locally."""
+    validator = Draft202012Validator(schema, registry=_SCHEMA_REGISTRY)
     errors = []
     try:
         for error in validator.iter_errors(data):
@@ -174,14 +197,13 @@ def validate_schema(data: dict, schema: dict) -> list[str]:
 
 
 def find_duplicates(items: list[str]) -> list[str]:
-    """Find duplicate items in a list."""
-    seen = set()
-    duplicates = []
-    for item in items:
-        if item in seen:
-            duplicates.append(item)
-        seen.add(item)
-    return duplicates
+    """Return the items that appear more than once, each reported once.
+
+    A name repeated three times is one problem, not two: appending per extra
+    occurrence would emit the same message twice and inflate the error count.
+    Order follows first appearance, so a document's diagnostics are stable.
+    """
+    return [item for item, count in Counter(items).items() if count > 1]
 
 
 def validate_unique_names(data: dict) -> list[str]:
@@ -306,27 +328,51 @@ def validate_sql_expression(expr: str, dialect: str, context: str) -> str | None
 
     sqlglot_dialect = DIALECT_MAP.get(dialect)
 
+    def statement_count_error(sql: str) -> str | None:
+        """Reject a parseable string that holds more than one statement.
+
+        `parse_one` accepts a statement list and returns one `Block` spanning it,
+        so `amount; DROP TABLE t` parses and would otherwise validate as an
+        expression. A semicolon inside a string literal or comment does not
+        split, so this only rejects a real statement list. Stray semicolons parse
+        as empty statements and are not counted, so `amount;` and `amount;;` are
+        both a single expression. Parse failures return None; the checks below
+        report those.
+        """
+        try:
+            statements = sqlglot.parse(sql, dialect=sqlglot_dialect)
+        except (ParseError, TokenError, RecursionError):
+            return None
+        count = len([statement for statement in statements if statement is not None])
+        if count > 1:
+            return (
+                f"[SQL] {context}: expected a single expression but found "
+                f"{count} statements"
+            )
+        return None
+
     try:
         # Try parsing as expression first (for field expressions like "column_name")
         sqlglot.parse_one(expr, dialect=sqlglot_dialect)
-        return None
     except (ParseError, TokenError, RecursionError):
         # A bare column reference fails to parse alone; retry it wrapped in
         # SELECT below. RecursionError (deeply nested input) is included so the
         # retry reports it instead of crashing, while genuine errors such as a
         # non-string expr raising TypeError still surface.
         pass
+    else:
+        return statement_count_error(expr)
 
     try:
         # Try wrapping in SELECT for simple column references
         sqlglot.parse_one(f"SELECT {expr}", dialect=sqlglot_dialect)
-        return None
     except (ParseError, TokenError) as e:
         return f"[SQL] {context}: {str(e).split(chr(10))[0]}"
     except RecursionError:
         # Deeply nested input exhausts the recursion limit rather than raising a
         # parser error; report it instead of letting it abort validation.
         return f"[SQL] {context}: expression is too deeply nested to parse"
+    return statement_count_error(f"SELECT {expr}")
 
 
 def validate_sql(data: dict) -> list[str]:
@@ -372,6 +418,144 @@ def validate_sql(data: dict) -> list[str]:
                 error = validate_sql_expression(expr, dialect, context)
                 if error:
                     errors.append(error)
+
+    return errors
+
+
+def as_list(value: object) -> list:
+    """The items of a list, or nothing for shapes that already failed the schema."""
+    return value if isinstance(value, list) else []
+
+
+# URI schemes whose IRIs have no "//" and may have a single colon (mailto:a@b.org,
+# tel:+1555..., urn:x). Without this list they look like prefix:local QNames.
+URI_SCHEMES = frozenset(
+    {"http", "https", "urn", "mailto", "tel", "file", "ftp", "data", "did", "doi", "geo", "ldap", "news", "sms", "tag"}
+)
+
+
+def undeclared_qname_prefix(iri: object, prefixes: dict) -> str | None:
+    """Return the prefix of a QName iri that prefixes does not declare."""
+    if not isinstance(iri, str) or ":" not in iri:
+        return None
+    prefix, local = iri.split(":", 1)
+    # ontology.md allows a full IRI or a prefix:local QName. A scheme followed
+    # by "//" (http://...), a second colon (urn:isbn:...) or a known URI scheme
+    # marks a full IRI; anything else is read as a QName.
+    if local.startswith("//") or ":" in local or prefix.lower() in URI_SCHEMES:
+        return None
+    return None if prefix in prefixes else prefix
+
+
+def find_extends_cycles(supertypes: dict[str, list[str]]) -> list[list[str]]:
+    """Find cycles in the extends graph, each reported once as a path."""
+    cycles = []
+    state = {}  # concept -> "active" while on the current path, "done" after
+
+    def visit(concept: str, path: list[str]) -> None:
+        state[concept] = "active"
+        path.append(concept)
+        for supertype in supertypes.get(concept, []):
+            if state.get(supertype) == "active":
+                cycles.append(path[path.index(supertype):] + [supertype])
+            elif supertype not in state:
+                visit(supertype, path)
+        path.pop()
+        state[concept] = "done"
+
+    for concept in supertypes:
+        if concept not in state:
+            visit(concept, [])
+    return cycles
+
+
+def validate_ontology(data: dict) -> list[str]:
+    """Validate the concepts and relationships of an ontology document.
+
+    The same kind of checks the core side gets from validate_unique_names and
+    validate_references: concept names are unique within the ontology,
+    relationship names are unique within their concept, and extends,
+    identify_by, roles and QName prefixes resolve to something declared.
+    ontology_mappings are left to schema validation.
+    """
+    if not isinstance(data, dict) or not isinstance(data.get("ontology"), list):
+        return []
+
+    errors = []
+
+    ontology_name = data.get("name", "<unnamed>")
+    components = [c for c in data["ontology"] if isinstance(c, dict)]
+    prefixes = data.get("prefixes") if isinstance(data.get("prefixes"), dict) else {}
+
+    concept_names = [c.get("concept") for c in components if c.get("concept")]
+    for dup in find_duplicates(concept_names):
+        errors.append(f"[Unique] Duplicate concept '{dup}' in ontology '{ontology_name}'")
+
+    declared = set(concept_names) | BUILT_IN_CONCEPTS
+    supertypes = {}
+    relationships = {}
+    for component in components:
+        concept = component.get("concept", "<unnamed>")
+        rel_names = [
+            r.get("name") for r in as_list(component.get("relationships"))
+            if isinstance(r, dict) and r.get("name")
+        ]
+        for dup in find_duplicates(rel_names):
+            errors.append(f"[Unique] Duplicate relationship '{dup}' in concept '{concept}'")
+        # Merged across duplicate components, so a duplicate concept is reported
+        # once rather than again as every reference to the first declaration
+        # failing. Reference checks below read each component directly.
+        supertypes.setdefault(concept, []).extend(
+            s for s in as_list(component.get("extends")) if isinstance(s, str)
+        )
+        relationships.setdefault(concept, set()).update(rel_names)
+
+    def inherited_relationships(concept: str) -> set[str]:
+        # A concept can identify itself by a relationship declared on a supertype,
+        # which is how the reference parser resolves identify_by as well.
+        names, pending, seen = set(), [concept], set()
+        while pending:
+            current = pending.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            names |= relationships.get(current, set())
+            pending.extend(supertypes.get(current, []))
+        return names
+
+    for component in components:
+        concept = component.get("concept", "<unnamed>")
+
+        for supertype in as_list(component.get("extends")):
+            if isinstance(supertype, str) and supertype not in declared:
+                errors.append(f"[Reference] Concept '{concept}' extends unknown concept '{supertype}'")
+
+        for identifier in as_list(component.get("identify_by")):
+            if isinstance(identifier, str) and identifier not in inherited_relationships(concept):
+                errors.append(
+                    f"[Reference] Concept '{concept}' identify_by references unknown relationship '{identifier}'"
+                )
+
+        prefix = undeclared_qname_prefix(component.get("iri"), prefixes)
+        if prefix:
+            errors.append(f"[Reference] Concept '{concept}' iri uses undeclared prefix '{prefix}'")
+
+        for relationship in as_list(component.get("relationships")):
+            if not isinstance(relationship, dict):
+                continue
+            rel_name = f"{concept}.{relationship.get('name', '<unnamed>')}"
+            for role in as_list(relationship.get("roles")):
+                role_concept = role.get("concept") if isinstance(role, dict) else None
+                if role_concept and role_concept not in declared:
+                    errors.append(
+                        f"[Reference] Relationship '{rel_name}' has a role played by unknown concept '{role_concept}'"
+                    )
+            prefix = undeclared_qname_prefix(relationship.get("iri"), prefixes)
+            if prefix:
+                errors.append(f"[Reference] Relationship '{rel_name}' iri uses undeclared prefix '{prefix}'")
+
+    for cycle in find_extends_cycles(supertypes):
+        errors.append(f"[Reference] Concept '{cycle[0]}' extends itself: {' -> '.join(cycle)}")
 
     return errors
 
@@ -426,6 +610,8 @@ def main():
         errors.extend(validate_references(data))
         errors.extend(validate_relationship_column_arity(data))
         errors.extend(validate_sql(data))
+    if not errors and isinstance(data, dict) and "ontology" in data:
+        errors.extend(validate_ontology(data))
 
     # Report results
     if errors:

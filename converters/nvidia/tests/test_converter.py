@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""Tests for Apache Ossie ↔ native NVIDIA GSF conversion."""
+"""Tests for Apache Ossie ↔ native NVIDIA Auto Ontology conversion."""
 
 from __future__ import annotations
 
@@ -29,13 +29,13 @@ from typing import Any
 import pytest
 import yaml
 
-from ossie_nvidia_gsf.converter import (
-    GSFConversionError,
-    convert_gsf_to_ossie,
-    convert_ossie_to_gsf,
+from ossie_nvidia_auto_ontology.converter import (
+    AutoOntologyConversionError,
+    convert_auto_ontology_to_ossie,
+    convert_ossie_to_auto_ontology,
     main,
 )
-from ossie_nvidia_gsf.native_converter import (
+from ossie_nvidia_auto_ontology.native_converter import (
     _SQL_TYPE_BY_OSSIE_DATATYPE,
     _index_native_document,
     _ossie_datatype,
@@ -54,15 +54,15 @@ def _ossie_yaml() -> str:
     return (FIXTURES / "sales.ossie.yaml").read_text(encoding="utf-8")
 
 
-def _gsf_yaml() -> str:
-    return (FIXTURES / "sales.gsf.yaml").read_text(encoding="utf-8")
+def _auto_ontology_yaml() -> str:
+    return (FIXTURES / "sales.auto_ontology.yaml").read_text(encoding="utf-8")
 
 
 def _native_extension(item: dict[str, Any]) -> dict[str, Any]:
     extension = next(
         value
         for value in item.get("custom_extensions") or []
-        if value["vendor_name"] == "NVIDIA_GSF"
+        if value["vendor_name"] == "NVIDIA_AUTO_ONTOLOGY"
     )
     return json.loads(extension["data"])
 
@@ -90,8 +90,8 @@ def _ids(value: Any) -> set[str]:
 
 
 def test_checked_in_fixture_is_exact_native_contract() -> None:
-    expected = yaml.safe_load(_gsf_yaml())
-    actual = yaml.safe_load(convert_ossie_to_gsf(_ossie_yaml()))
+    expected = yaml.safe_load(_auto_ontology_yaml())
+    actual = yaml.safe_load(convert_ossie_to_auto_ontology(_ossie_yaml()))
 
     assert actual == expected
     assert set(actual) == {"data_layer", "semantic_layer", "zones"}
@@ -108,8 +108,8 @@ def test_checked_in_fixture_is_exact_native_contract() -> None:
 
 
 def test_ossie_ids_are_deterministic_and_references_resolve() -> None:
-    first = yaml.safe_load(convert_ossie_to_gsf(_ossie_yaml()))
-    second = yaml.safe_load(convert_ossie_to_gsf(_ossie_yaml()))
+    first = yaml.safe_load(convert_ossie_to_auto_ontology(_ossie_yaml()))
+    second = yaml.safe_load(convert_ossie_to_auto_ontology(_ossie_yaml()))
 
     assert _ids(first) == _ids(second)
     assert first == second
@@ -129,7 +129,9 @@ def test_ossie_ids_are_deterministic_and_references_resolve() -> None:
 
 def test_generated_ossie_passes_official_validation(tmp_path: Path) -> None:
     output_path = tmp_path / "converted.ossie.yaml"
-    output_path.write_text(convert_gsf_to_ossie(_gsf_yaml()), encoding="utf-8")
+    output_path.write_text(
+        convert_auto_ontology_to_ossie(_auto_ontology_yaml()), encoding="utf-8"
+    )
 
     result = subprocess.run(
         [sys.executable, str(VALIDATOR), str(output_path)],
@@ -143,7 +145,9 @@ def test_generated_ossie_passes_official_validation(tmp_path: Path) -> None:
 
 
 def test_round_trip_preserves_ossie_semantics_and_global_metrics() -> None:
-    result = yaml.safe_load(convert_gsf_to_ossie(convert_ossie_to_gsf(_ossie_yaml())))
+    result = yaml.safe_load(
+        convert_auto_ontology_to_ossie(convert_ossie_to_auto_ontology(_ossie_yaml()))
+    )
     model = result
     datasets = {dataset["name"]: dataset for dataset in model["datasets"]}
     order_fields = {field["name"]: field for field in datasets["orders"]["fields"]}
@@ -157,7 +161,7 @@ def test_round_trip_preserves_ossie_semantics_and_global_metrics() -> None:
     assert [metric["name"] for metric in model["metrics"]] == ["revenue_per_customer"]
     assert _native_extension(model)["native_document"]["zones"] == []
     assert model["relationships"][0] == {
-        "name": "orders_to_customers",
+        "name": "orders_customer_id_to_customers",
         "from": "orders",
         "to": "customers",
         "from_columns": ["customer_id"],
@@ -166,7 +170,7 @@ def test_round_trip_preserves_ossie_semantics_and_global_metrics() -> None:
 
 
 def test_edited_ossie_expressions_replace_preserved_native_sql() -> None:
-    ossie = yaml.safe_load(convert_gsf_to_ossie(_gsf_yaml()))
+    ossie = yaml.safe_load(convert_auto_ontology_to_ossie(_auto_ontology_yaml()))
     model = ossie
     orders = next(
         dataset for dataset in model["datasets"] if dataset["name"] == "orders"
@@ -180,7 +184,7 @@ def test_edited_ossie_expressions_replace_preserved_native_sql() -> None:
     )
 
     regenerated = yaml.safe_load(
-        convert_ossie_to_gsf(yaml.safe_dump(ossie, sort_keys=False))
+        convert_ossie_to_auto_ontology(yaml.safe_dump(ossie, sort_keys=False))
     )
     sql_attribute = regenerated["semantic_layer"]["sql_attributes"]["manual"][0]
     analysis = regenerated["semantic_layer"]["custom_analyses"][0]
@@ -192,7 +196,7 @@ def test_edited_ossie_expressions_replace_preserved_native_sql() -> None:
 
 
 def test_native_round_trip_preserves_ids_catalog_sql_source_and_zones() -> None:
-    native = yaml.safe_load(_gsf_yaml())
+    native = yaml.safe_load(_auto_ontology_yaml())
     database = native["data_layer"]["databases"][0]
     database["dialect"] = "snowflake"
     first_column = database["schemas"][0]["tables"][0]["columns"][0]
@@ -223,11 +227,11 @@ def test_native_round_trip_preserves_ids_catalog_sql_source_and_zones() -> None:
     native["semantic_layer"]["sql_attributes"]["table"] = manual
     native["semantic_layer"]["sql_attributes"]["manual"] = []
 
-    ossie = yaml.safe_load(convert_gsf_to_ossie(yaml.safe_dump(native)))
+    ossie = yaml.safe_load(convert_auto_ontology_to_ossie(yaml.safe_dump(native)))
     assert _native_extension(ossie)["native_document"] == native
 
     restored = yaml.safe_load(
-        convert_ossie_to_gsf(yaml.safe_dump(ossie, sort_keys=False))
+        convert_ossie_to_auto_ontology(yaml.safe_dump(ossie, sort_keys=False))
     )
     restored_database = restored["data_layer"]["databases"][0]
     restored_first_column = restored_database["schemas"][0]["tables"][0]["columns"][0]
@@ -249,12 +253,12 @@ def test_native_round_trip_preserves_ids_catalog_sql_source_and_zones() -> None:
 
 
 def test_relationship_edits_replace_preserved_native_records() -> None:
-    ossie = yaml.safe_load(convert_gsf_to_ossie(_gsf_yaml()))
+    ossie = yaml.safe_load(convert_auto_ontology_to_ossie(_auto_ontology_yaml()))
     relationship = ossie["relationships"][0]
     relationship["from_columns"] = ["order_id"]
 
     regenerated = yaml.safe_load(
-        convert_ossie_to_gsf(yaml.safe_dump(ossie, sort_keys=False))
+        convert_ossie_to_auto_ontology(yaml.safe_dump(ossie, sort_keys=False))
     )
 
     assert regenerated["data_layer"]["joins"][0]["join_columns"] == [
@@ -274,11 +278,11 @@ def test_relationship_edits_replace_preserved_native_records() -> None:
 
 
 def test_relationship_deletion_removes_preserved_native_records() -> None:
-    ossie = yaml.safe_load(convert_gsf_to_ossie(_gsf_yaml()))
+    ossie = yaml.safe_load(convert_auto_ontology_to_ossie(_auto_ontology_yaml()))
     ossie.pop("relationships")
 
     regenerated = yaml.safe_load(
-        convert_ossie_to_gsf(yaml.safe_dump(ossie, sort_keys=False))
+        convert_ossie_to_auto_ontology(yaml.safe_dump(ossie, sort_keys=False))
     )
 
     assert regenerated["data_layer"]["joins"] == []
@@ -286,8 +290,440 @@ def test_relationship_deletion_removes_preserved_native_records() -> None:
     assert regenerated["semantic_layer"]["semantic_fks"] == []
 
 
+def test_a_semantic_only_relationship_does_not_become_a_physical_constraint() -> None:
+    native = yaml.safe_load(_auto_ontology_yaml())
+    native["data_layer"]["joins"] = []
+    native["data_layer"]["foreign_keys"] = []
+
+    ossie = convert_auto_ontology_to_ossie(yaml.safe_dump(native))
+    assert yaml.safe_load(ossie)["relationships"]
+    restored = yaml.safe_load(convert_ossie_to_auto_ontology(ossie))
+
+    assert restored["data_layer"]["joins"] == []
+    assert restored["data_layer"]["foreign_keys"] == []
+    assert (
+        restored["semantic_layer"]["semantic_fks"]
+        == native["semantic_layer"]["semantic_fks"]
+    )
+
+
+def test_a_physical_only_relationship_gains_no_join_or_semantic_fk() -> None:
+    native = yaml.safe_load(_auto_ontology_yaml())
+    native["data_layer"]["joins"] = []
+    native["semantic_layer"]["semantic_fks"] = []
+
+    restored = yaml.safe_load(
+        convert_ossie_to_auto_ontology(
+            convert_auto_ontology_to_ossie(yaml.safe_dump(native))
+        )
+    )
+
+    assert restored["data_layer"]["joins"] == []
+    assert restored["semantic_layer"]["semantic_fks"] == []
+    assert (
+        restored["data_layer"]["foreign_keys"] == native["data_layer"]["foreign_keys"]
+    )
+
+
+def test_relationship_records_survive_a_native_cycle_unchanged() -> None:
+    native = yaml.safe_load(_auto_ontology_yaml())
+
+    restored = yaml.safe_load(
+        convert_ossie_to_auto_ontology(
+            convert_auto_ontology_to_ossie(_auto_ontology_yaml())
+        )
+    )
+
+    assert restored["data_layer"]["joins"] == native["data_layer"]["joins"]
+    assert (
+        restored["data_layer"]["foreign_keys"] == native["data_layer"]["foreign_keys"]
+    )
+    assert (
+        restored["semantic_layer"]["semantic_fks"]
+        == native["semantic_layer"]["semantic_fks"]
+    )
+
+
+def test_only_column_pairs_added_in_ossie_are_generated() -> None:
+    native = yaml.safe_load(_auto_ontology_yaml())
+    native["data_layer"]["joins"] = []
+    native["data_layer"]["foreign_keys"] = []
+    ossie = yaml.safe_load(convert_auto_ontology_to_ossie(yaml.safe_dump(native)))
+    relationship = ossie["relationships"][0]
+    relationship["from_columns"].append("order_id")
+    relationship["to_columns"].append("customer_id")
+
+    restored = yaml.safe_load(
+        convert_ossie_to_auto_ontology(yaml.safe_dump(ossie, sort_keys=False))
+    )
+
+    assert [join["join_columns"] for join in restored["data_layer"]["joins"]] == [
+        [{"source": "order_id", "target": "customer_id"}]
+    ]
+    assert len(restored["data_layer"]["foreign_keys"]) == 1
+    assert (
+        restored["semantic_layer"]["semantic_fks"][0]
+        == native["semantic_layer"]["semantic_fks"][0]
+    )
+    assert len(restored["semantic_layer"]["semantic_fks"]) == 2
+
+
+def _physical_fk_native(
+    extra_orders_columns: list[str],
+    extra_customers_columns: list[str],
+    foreign_keys: list[tuple[str, str]],
+    customers_pk: list[str] | None = None,
+) -> dict[str, Any]:
+    """The sample model linked only by physical foreign keys, orders -> customers."""
+    native = yaml.safe_load(_auto_ontology_yaml())
+    native["data_layer"]["joins"] = []
+    native["semantic_layer"]["semantic_fks"] = []
+    tables = {
+        table["name"]: table
+        for table in native["data_layer"]["databases"][0]["schemas"][0]["tables"]
+    }
+    for table_name, names in (
+        ("orders", extra_orders_columns),
+        ("customers", extra_customers_columns),
+    ):
+        for name in names:
+            tables[table_name]["columns"].append(
+                {
+                    "id": f"{table_name}-{name}",
+                    "name": name,
+                    "description": "",
+                    "type": "",
+                    "sample_values": [],
+                    "is_nullable": True,
+                    "is_unique": False,
+                }
+            )
+    if customers_pk is not None:
+        tables["customers"]["pk"] = customers_pk
+    column_ids = {
+        (table_name, column["name"]): column["id"]
+        for table_name, table in tables.items()
+        for column in table["columns"]
+    }
+    native["data_layer"]["foreign_keys"] = [
+        {
+            "source_column_id": column_ids[("orders", source)],
+            "target_column_id": column_ids[("customers", target)],
+        }
+        for source, target in foreign_keys
+    ]
+    return native
+
+
+def _relationship_columns(ossie: dict[str, Any]) -> dict[str, list[tuple[str, str]]]:
+    return {
+        relationship["name"]: list(
+            zip(relationship["from_columns"], relationship["to_columns"], strict=True)
+        )
+        for relationship in ossie["relationships"]
+    }
+
+
+def test_independent_foreign_keys_into_one_column_are_separate_relationships() -> None:
+    native = _physical_fk_native(
+        ["referrer_id"],
+        [],
+        [("customer_id", "customer_id"), ("referrer_id", "customer_id")],
+    )
+
+    ossie = convert_auto_ontology_to_ossie(yaml.safe_dump(native))
+
+    assert _relationship_columns(yaml.safe_load(ossie)) == {
+        "orders_customer_id_to_customers": [("customer_id", "customer_id")],
+        "orders_referrer_id_to_customers": [("referrer_id", "customer_id")],
+    }
+    restored = yaml.safe_load(convert_ossie_to_auto_ontology(ossie))
+    assert restored["data_layer"]["joins"] == []
+    assert (
+        restored["data_layer"]["foreign_keys"] == native["data_layer"]["foreign_keys"]
+    )
+
+
+def test_foreign_keys_covering_a_composite_primary_key_stay_one_relationship() -> None:
+    native = _physical_fk_native(
+        ["region"],
+        ["region"],
+        [("region", "region"), ("customer_id", "customer_id")],
+        customers_pk=["customer_id", "region"],
+    )
+
+    ossie = yaml.safe_load(convert_auto_ontology_to_ossie(yaml.safe_dump(native)))
+
+    assert _relationship_columns(ossie) == {
+        "orders_customer_id_region_to_customers": [
+            ("customer_id", "customer_id"),
+            ("region", "region"),
+        ],
+    }
+
+
+def test_a_composite_key_and_an_independent_link_are_kept_apart() -> None:
+    native = _physical_fk_native(
+        ["region", "referrer_code"],
+        ["region", "referral_code"],
+        [
+            ("customer_id", "customer_id"),
+            ("region", "region"),
+            ("referrer_code", "referral_code"),
+        ],
+        customers_pk=["customer_id", "region"],
+    )
+
+    ossie = yaml.safe_load(convert_auto_ontology_to_ossie(yaml.safe_dump(native)))
+
+    assert _relationship_columns(ossie) == {
+        "orders_customer_id_region_to_customers": [
+            ("customer_id", "customer_id"),
+            ("region", "region"),
+        ],
+        "orders_referrer_code_to_customers": [("referrer_code", "referral_code")],
+    }
+
+
+@pytest.mark.parametrize(
+    "customers_pk",
+    [
+        pytest.param([], id="no-primary-key-recorded"),
+        pytest.param(["customer_number"], id="references-a-non-primary-key"),
+        pytest.param(["customer_id"], id="only-one-column-in-the-primary-key"),
+    ],
+)
+def test_foreign_keys_with_distinct_targets_stay_one_relationship(
+    customers_pk: list[str],
+) -> None:
+    """Nothing shows these pairs are independent, so they stay one key."""
+    native = _physical_fk_native(
+        ["region"],
+        ["region", "customer_number"],
+        [("region", "region"), ("customer_id", "customer_id")],
+        customers_pk=customers_pk,
+    )
+
+    ossie = convert_auto_ontology_to_ossie(yaml.safe_dump(native))
+
+    assert _relationship_columns(yaml.safe_load(ossie)) == {
+        "orders_customer_id_region_to_customers": [
+            ("customer_id", "customer_id"),
+            ("region", "region"),
+        ],
+    }
+    restored = yaml.safe_load(convert_ossie_to_auto_ontology(ossie))
+    assert restored["data_layer"]["joins"] == []
+    assert (
+        restored["data_layer"]["foreign_keys"] == native["data_layer"]["foreign_keys"]
+    )
+
+
+def test_adding_a_link_does_not_rename_existing_relationships() -> None:
+    single = _physical_fk_native([], [], [("customer_id", "customer_id")])
+    with_second_link = _physical_fk_native(
+        ["referrer_id"],
+        [],
+        [("customer_id", "customer_id"), ("referrer_id", "customer_id")],
+    )
+
+    before = _relationship_columns(
+        yaml.safe_load(convert_auto_ontology_to_ossie(yaml.safe_dump(single)))
+    )
+    after = _relationship_columns(
+        yaml.safe_load(convert_auto_ontology_to_ossie(yaml.safe_dump(with_second_link)))
+    )
+
+    assert before == {
+        "orders_customer_id_to_customers": [("customer_id", "customer_id")]
+    }
+    assert after["orders_customer_id_to_customers"] == [("customer_id", "customer_id")]
+    assert len(after) == 2
+
+
+def test_links_that_cover_a_composite_key_ambiguously_are_all_kept_apart() -> None:
+    """Two links reach ``region``, so which one completes the key is unknown."""
+    native = _physical_fk_native(
+        ["region", "billing_region"],
+        ["region"],
+        [
+            ("customer_id", "customer_id"),
+            ("region", "region"),
+            ("billing_region", "region"),
+        ],
+        customers_pk=["customer_id", "region"],
+    )
+
+    ossie = yaml.safe_load(convert_auto_ontology_to_ossie(yaml.safe_dump(native)))
+
+    assert all(len(columns) == 1 for columns in _relationship_columns(ossie).values())
+    assert len(ossie["relationships"]) == 3
+
+
+def _table_ids(native: dict[str, Any]) -> dict[str, str]:
+    return {
+        table["name"]: table["id"]
+        for table in native["data_layer"]["databases"][0]["schemas"][0]["tables"]
+    }
+
+
+def _add_attribute(native: dict[str, Any], term_name: str, column_id: str) -> str:
+    term = next(
+        term for term in native["semantic_layer"]["terms"] if term["name"] == term_name
+    )
+    attribute_id = f"{term_name}-{column_id}-attribute"
+    term["columns_attributes"].append(
+        {
+            "id": attribute_id,
+            "name": f"{term_name} {column_id}",
+            "description": "",
+            "column_id": column_id,
+        }
+    )
+    return attribute_id
+
+
+def test_a_join_that_overlaps_an_earlier_one_keeps_all_its_columns() -> None:
+    native = _physical_fk_native(["region"], ["region"], [])
+    tables = _table_ids(native)
+    native["data_layer"]["joins"] = [
+        {
+            "source_table_id": tables["orders"],
+            "target_table_id": tables["customers"],
+            "join_columns": [{"source": "customer_id", "target": "customer_id"}],
+        },
+        {
+            "source_table_id": tables["orders"],
+            "target_table_id": tables["customers"],
+            "join_columns": [
+                {"source": "customer_id", "target": "customer_id"},
+                {"source": "region", "target": "region"},
+            ],
+        },
+    ]
+
+    ossie = yaml.safe_load(convert_auto_ontology_to_ossie(yaml.safe_dump(native)))
+
+    assert _relationship_columns(ossie) == {
+        "orders_customer_id_to_customers": [("customer_id", "customer_id")],
+        "orders_customer_id_region_to_customers": [
+            ("customer_id", "customer_id"),
+            ("region", "region"),
+        ],
+    }
+
+
+def test_split_links_pick_their_dataset_from_all_links_of_the_table_pair() -> None:
+    """Only one of the two terms on ``orders`` has both linking columns."""
+    native = _physical_fk_native(
+        ["referrer_id"],
+        [],
+        [("customer_id", "customer_id"), ("referrer_id", "customer_id")],
+    )
+    tables = _table_ids(native)
+    orders_columns = {
+        column["name"]: column["id"]
+        for table in native["data_layer"]["databases"][0]["schemas"][0]["tables"]
+        if table["name"] == "orders"
+        for column in table["columns"]
+    }
+    _add_attribute(native, "orders", orders_columns["referrer_id"])
+    native["semantic_layer"]["terms"].append(
+        {
+            "id": "order-summary-term",
+            "name": "order_summary",
+            "description": "",
+            "represents": [tables["orders"]],
+            "columns_attributes": [
+                {
+                    "id": "order-summary-customer",
+                    "name": "customer_id",
+                    "description": "",
+                    "column_id": orders_columns["customer_id"],
+                }
+            ],
+        }
+    )
+
+    ossie = yaml.safe_load(convert_auto_ontology_to_ossie(yaml.safe_dump(native)))
+
+    assert _relationship_columns(ossie) == {
+        "orders_customer_id_to_customers": [("customer_id", "customer_id")],
+        "orders_referrer_id_to_customers": [("referrer_id", "customer_id")],
+    }
+
+
+def test_a_composite_key_known_only_from_semantic_fks_stays_one_relationship() -> None:
+    native = _physical_fk_native(["region"], ["region"], [])
+    native["data_layer"]["foreign_keys"] = []
+    columns = {
+        (table["name"], column["name"]): column["id"]
+        for table in native["data_layer"]["databases"][0]["schemas"][0]["tables"]
+        for column in table["columns"]
+    }
+    customer_attribute = next(
+        attribute["id"]
+        for term in native["semantic_layer"]["terms"]
+        if term["name"] == "customers"
+        for attribute in term["columns_attributes"]
+        if attribute["column_id"] == columns[("customers", "customer_id")]
+    )
+    region_attribute = _add_attribute(
+        native, "customers", columns[("customers", "region")]
+    )
+    native["semantic_layer"]["semantic_fks"] = [
+        {
+            "column_attribute_id": customer_attribute,
+            "column_id": columns[("orders", "customer_id")],
+        },
+        {
+            "column_attribute_id": region_attribute,
+            "column_id": columns[("orders", "region")],
+        },
+    ]
+
+    ossie = convert_auto_ontology_to_ossie(yaml.safe_dump(native))
+
+    assert _relationship_columns(yaml.safe_load(ossie)) == {
+        "orders_customer_id_region_to_customers": [
+            ("customer_id", "customer_id"),
+            ("region", "region"),
+        ],
+    }
+    restored = yaml.safe_load(convert_ossie_to_auto_ontology(ossie))
+    assert restored["data_layer"]["joins"] == []
+    assert restored["data_layer"]["foreign_keys"] == []
+    assert (
+        restored["semantic_layer"]["semantic_fks"]
+        == native["semantic_layer"]["semantic_fks"]
+    )
+
+
+def test_a_join_without_usable_columns_splits_its_fallback_foreign_keys() -> None:
+    native = _physical_fk_native(
+        ["referrer_id"],
+        [],
+        [("customer_id", "customer_id"), ("referrer_id", "customer_id")],
+    )
+    tables = _table_ids(native)
+    native["data_layer"]["joins"] = [
+        {
+            "source_table_id": tables["orders"],
+            "target_table_id": tables["customers"],
+            "join_columns": [],
+        }
+    ]
+
+    ossie = yaml.safe_load(convert_auto_ontology_to_ossie(yaml.safe_dump(native)))
+
+    assert _relationship_columns(ossie) == {
+        "orders_customer_id_to_customers": [("customer_id", "customer_id")],
+        "orders_referrer_id_to_customers": [("referrer_id", "customer_id")],
+    }
+
+
 def test_relationship_reconciliation_preserves_catalog_only_records() -> None:
-    native = yaml.safe_load(_gsf_yaml())
+    native = yaml.safe_load(_auto_ontology_yaml())
     schema = native["data_layer"]["databases"][0]["schemas"][0]
     orders = next(table for table in schema["tables"] if table["name"] == "orders")
     order_id = next(
@@ -325,10 +761,10 @@ def test_relationship_reconciliation_preserves_catalog_only_records() -> None:
     native["data_layer"]["joins"].append(audit_join)
     native["data_layer"]["foreign_keys"].append(audit_fk)
 
-    ossie = yaml.safe_load(convert_gsf_to_ossie(yaml.safe_dump(native)))
+    ossie = yaml.safe_load(convert_auto_ontology_to_ossie(yaml.safe_dump(native)))
     ossie.pop("relationships")
     regenerated = yaml.safe_load(
-        convert_ossie_to_gsf(yaml.safe_dump(ossie, sort_keys=False))
+        convert_ossie_to_auto_ontology(yaml.safe_dump(ossie, sort_keys=False))
     )
 
     assert regenerated["data_layer"]["joins"] == [audit_join]
@@ -342,18 +778,18 @@ def test_multiple_databases_are_supported_and_name_falls_back() -> None:
     model["relationships"] = []
     model["metrics"] = []
 
-    native_yaml = convert_ossie_to_gsf(yaml.safe_dump(ossie))
+    native_yaml = convert_ossie_to_auto_ontology(yaml.safe_dump(ossie))
     native = yaml.safe_load(native_yaml)
     database_names = {
         schema["database_name"]
         for database in native["data_layer"]["databases"]
         for schema in database["schemas"]
     }
-    restored = yaml.safe_load(convert_gsf_to_ossie(native_yaml))
+    restored = yaml.safe_load(convert_auto_ontology_to_ossie(native_yaml))
 
     assert database_names == {"analytics", "crm"}
     assert len(native["data_layer"]["databases"]) == 2
-    assert restored["name"] == "gsf_model"
+    assert restored["name"] == "auto_ontology_model"
 
 
 def test_shared_physical_source_uses_one_catalog_table_and_valid_ossie(
@@ -376,7 +812,7 @@ def test_shared_physical_source_uses_one_catalog_table_and_valid_ossie(
         }
     )
 
-    native_yaml = convert_ossie_to_gsf(yaml.safe_dump(ossie, sort_keys=False))
+    native_yaml = convert_ossie_to_auto_ontology(yaml.safe_dump(ossie, sort_keys=False))
     native = yaml.safe_load(native_yaml)
     order_tables = [
         table
@@ -398,7 +834,7 @@ def test_shared_physical_source_uses_one_catalog_table_and_valid_ossie(
     }
     assert represented_ids["orders"] == represented_ids["order_amounts"]
 
-    restored = yaml.safe_load(convert_gsf_to_ossie(native_yaml))
+    restored = yaml.safe_load(convert_auto_ontology_to_ossie(native_yaml))
     assert {
         dataset["name"] for dataset in restored["datasets"]
     } >= {"orders", "order_amounts"}
@@ -417,8 +853,8 @@ def test_cross_database_ossie_metric_is_rejected() -> None:
     ossie = yaml.safe_load(_ossie_yaml())
     ossie["datasets"][1]["source"] = "crm.public.customers"
 
-    with pytest.raises(GSFConversionError, match="spans multiple databases"):
-        convert_ossie_to_gsf(yaml.safe_dump(ossie))
+    with pytest.raises(AutoOntologyConversionError, match="spans multiple databases"):
+        convert_ossie_to_auto_ontology(yaml.safe_dump(ossie))
 
 
 def test_cross_database_full_query_field_is_rejected() -> None:
@@ -444,18 +880,20 @@ def test_cross_database_full_query_field_is_rejected() -> None:
         }
     )
 
-    with pytest.raises(GSFConversionError, match="SQL attribute.*multiple databases"):
-        convert_ossie_to_gsf(yaml.safe_dump(ossie))
+    with pytest.raises(
+        AutoOntologyConversionError, match="SQL attribute.*multiple databases"
+    ):
+        convert_ossie_to_auto_ontology(yaml.safe_dump(ossie))
 
 
 @pytest.mark.parametrize("kind", ["sql_attribute", "custom_analysis"])
-def test_cross_database_gsf_sql_objects_are_rejected(kind: str) -> None:
+def test_cross_database_auto_ontology_sql_objects_are_rejected(kind: str) -> None:
     ossie = yaml.safe_load(_ossie_yaml())
     model = ossie
     model["datasets"][1]["source"] = "crm.public.customers"
     model["metrics"] = []
     model["relationships"] = []
-    native = yaml.safe_load(convert_ossie_to_gsf(yaml.safe_dump(ossie)))
+    native = yaml.safe_load(convert_ossie_to_auto_ontology(yaml.safe_dump(ossie)))
     terms = {term["name"]: term for term in native["semantic_layer"]["terms"]}
     columns = {
         (schema["database_name"], table["name"], column["name"]): column["id"]
@@ -496,12 +934,12 @@ def test_cross_database_gsf_sql_objects_are_rejected(kind: str) -> None:
             }
         )
 
-    with pytest.raises(GSFConversionError, match="spans multiple databases"):
-        convert_gsf_to_ossie(yaml.safe_dump(native))
+    with pytest.raises(AutoOntologyConversionError, match="spans multiple databases"):
+        convert_auto_ontology_to_ossie(yaml.safe_dump(native))
 
 
 def test_relationships_emit_join_physical_fk_and_semantic_fk() -> None:
-    native = yaml.safe_load(convert_ossie_to_gsf(_ossie_yaml()))
+    native = yaml.safe_load(convert_ossie_to_auto_ontology(_ossie_yaml()))
 
     assert len(native["data_layer"]["joins"]) == 1
     assert native["data_layer"]["joins"][0]["join_columns"] == [
@@ -511,44 +949,48 @@ def test_relationships_emit_join_physical_fk_and_semantic_fk() -> None:
     assert len(native["semantic_layer"]["semantic_fks"]) == 1
 
     native["data_layer"]["joins"] = []
-    restored = yaml.safe_load(convert_gsf_to_ossie(yaml.safe_dump(native)))
+    restored = yaml.safe_load(convert_auto_ontology_to_ossie(yaml.safe_dump(native)))
     assert restored["relationships"][0]["from"] == "orders"
     assert restored["relationships"][0]["to"] == "customers"
 
 
-def test_gsf_requires_one_represented_table_per_term() -> None:
-    native = yaml.safe_load(_gsf_yaml())
+def test_auto_ontology_requires_one_represented_table_per_term() -> None:
+    native = yaml.safe_load(_auto_ontology_yaml())
     term = native["semantic_layer"]["terms"][0]
     term["represents"].append(native["semantic_layer"]["terms"][1]["represents"][0])
 
-    with pytest.raises(GSFConversionError, match="exactly one table"):
-        convert_gsf_to_ossie(yaml.safe_dump(native))
+    with pytest.raises(AutoOntologyConversionError, match="exactly one table"):
+        convert_auto_ontology_to_ossie(yaml.safe_dump(native))
 
 
-def test_duplicate_gsf_term_names_are_rejected() -> None:
-    native = yaml.safe_load(_gsf_yaml())
+def test_duplicate_auto_ontology_term_names_are_rejected() -> None:
+    native = yaml.safe_load(_auto_ontology_yaml())
     native["semantic_layer"]["terms"][1]["name"] = "orders"
 
-    with pytest.raises(GSFConversionError, match="Duplicate GSF term name"):
-        convert_gsf_to_ossie(yaml.safe_dump(native))
+    with pytest.raises(
+        AutoOntologyConversionError, match="Duplicate Auto Ontology term name"
+    ):
+        convert_auto_ontology_to_ossie(yaml.safe_dump(native))
 
 
-def test_duplicate_gsf_field_names_across_attribute_kinds_are_rejected() -> None:
-    native = yaml.safe_load(_gsf_yaml())
+def test_duplicate_auto_ontology_field_names_across_attribute_kinds_are_rejected() -> (
+    None
+):
+    native = yaml.safe_load(_auto_ontology_yaml())
     native["semantic_layer"]["sql_attributes"]["manual"][0]["name"] = "order_id"
 
-    with pytest.raises(GSFConversionError, match="Duplicate field name"):
-        convert_gsf_to_ossie(yaml.safe_dump(native))
+    with pytest.raises(AutoOntologyConversionError, match="Duplicate field name"):
+        convert_auto_ontology_to_ossie(yaml.safe_dump(native))
 
 
-def test_catalog_only_gsf_has_no_representable_terms() -> None:
-    native = yaml.safe_load(_gsf_yaml())
+def test_catalog_only_auto_ontology_has_no_representable_terms() -> None:
+    native = yaml.safe_load(_auto_ontology_yaml())
     native["semantic_layer"]["terms"] = []
     native["semantic_layer"]["sql_attributes"]["manual"] = []
     native["semantic_layer"]["custom_analyses"] = []
 
-    with pytest.raises(GSFConversionError, match="no representable terms"):
-        convert_gsf_to_ossie(yaml.safe_dump(native))
+    with pytest.raises(AutoOntologyConversionError, match="no representable terms"):
+        convert_auto_ontology_to_ossie(yaml.safe_dump(native))
 
 
 @pytest.mark.parametrize(
@@ -574,7 +1016,7 @@ def test_date_part_keywords_do_not_become_catalog_columns(
         }
     )
 
-    native = yaml.safe_load(convert_ossie_to_gsf(yaml.safe_dump(ossie)))
+    native = yaml.safe_load(convert_ossie_to_auto_ontology(yaml.safe_dump(ossie)))
     orders = next(
         table
         for database in native["data_layer"]["databases"]
@@ -595,8 +1037,8 @@ def test_date_part_keywords_do_not_become_catalog_columns(
     assert unit not in {referenced.get(item) for item in attribute["sql_column_is"]}
 
 
-def test_gsf_sourced_catalog_is_never_widened_by_sql_identifiers() -> None:
-    native = yaml.safe_load(_gsf_yaml())
+def test_auto_ontology_sourced_catalog_is_never_widened_by_sql_identifiers() -> None:
+    native = yaml.safe_load(_auto_ontology_yaml())
     manual = native["semantic_layer"]["sql_attributes"]["manual"][0]
     manual["sql"] = (
         "SELECT DATEDIFF(day, order_date, CURRENT_TIMESTAMP()) + not_a_real_column "
@@ -610,8 +1052,8 @@ def test_gsf_sourced_catalog_is_never_widened_by_sql_identifiers() -> None:
         for column in table["columns"]
     }
 
-    ossie = convert_gsf_to_ossie(yaml.safe_dump(native))
-    restored = yaml.safe_load(convert_ossie_to_gsf(ossie))
+    ossie = convert_auto_ontology_to_ossie(yaml.safe_dump(native))
+    restored = yaml.safe_load(convert_ossie_to_auto_ontology(ossie))
     after_columns = [
         column
         for database in restored["data_layer"]["databases"]
@@ -629,7 +1071,7 @@ def test_any_release_in_the_supported_series_is_accepted(version: str) -> None:
     ossie = yaml.safe_load(_ossie_yaml())
     ossie["version"] = version
 
-    native = yaml.safe_load(convert_ossie_to_gsf(yaml.safe_dump(ossie)))
+    native = yaml.safe_load(convert_ossie_to_auto_ontology(yaml.safe_dump(ossie)))
 
     assert native["semantic_layer"]["terms"]
 
@@ -639,34 +1081,52 @@ def test_versions_outside_the_supported_series_are_rejected(version: str) -> Non
     ossie = yaml.safe_load(_ossie_yaml())
     ossie["version"] = version
 
-    with pytest.raises(GSFConversionError, match="Unsupported Ossie version"):
-        convert_ossie_to_gsf(yaml.safe_dump(ossie))
+    with pytest.raises(AutoOntologyConversionError, match="Unsupported Ossie version"):
+        convert_ossie_to_auto_ontology(yaml.safe_dump(ossie))
 
 
 def test_dialect_specific_native_sql_survives_a_round_trip() -> None:
     """``TOP n`` is valid Snowflake but the default parser rejects it."""
-    native = yaml.safe_load(_gsf_yaml())
+    native = yaml.safe_load(_auto_ontology_yaml())
     manual = native["semantic_layer"]["sql_attributes"]["manual"][0]
     manual["sql"] = (
         'SELECT TOP 1 "orders"."subtotal" AS "net_total" '
         'FROM "analytics"."public"."orders" AS "orders"'
     )
 
-    ossie = convert_gsf_to_ossie(yaml.safe_dump(native))
-    restored = yaml.safe_load(convert_ossie_to_gsf(ossie))
+    ossie = convert_auto_ontology_to_ossie(yaml.safe_dump(native))
+    restored = yaml.safe_load(convert_ossie_to_auto_ontology(ossie))
 
     assert _manual_sql(restored, "net_total") == manual["sql"]
 
 
 def test_native_sql_no_dialect_can_parse_is_carried_through_verbatim() -> None:
-    native = yaml.safe_load(_gsf_yaml())
+    native = yaml.safe_load(_auto_ontology_yaml())
     manual = native["semantic_layer"]["sql_attributes"]["manual"][0]
     manual["sql"] = "SELECT not ((parseable by any dialect"
 
-    ossie = convert_gsf_to_ossie(yaml.safe_dump(native))
-    restored = yaml.safe_load(convert_ossie_to_gsf(ossie))
+    ossie = convert_auto_ontology_to_ossie(yaml.safe_dump(native))
+    restored = yaml.safe_load(convert_ossie_to_auto_ontology(ossie))
 
     assert _manual_sql(restored, "net_total") == manual["sql"]
+
+
+@pytest.mark.parametrize("legacy_vendor", ["NVIDIA_GSF", "GSF"])
+def test_extensions_written_under_the_gsf_name_are_still_read(
+    legacy_vendor: str,
+) -> None:
+    native = yaml.safe_load(_auto_ontology_yaml())
+    native["zones"] = [{"id": "zone-emea", "name": "emea"}]
+    ossie = convert_auto_ontology_to_ossie(yaml.safe_dump(native))
+    legacy_ossie = ossie.replace(
+        "vendor_name: NVIDIA_AUTO_ONTOLOGY", f"vendor_name: {legacy_vendor}"
+    )
+    assert legacy_ossie != ossie
+
+    restored = yaml.safe_load(convert_ossie_to_auto_ontology(legacy_ossie))
+
+    assert restored == yaml.safe_load(convert_ossie_to_auto_ontology(ossie))
+    assert restored["zones"] == native["zones"]
 
 
 @pytest.mark.parametrize(
@@ -693,7 +1153,7 @@ def test_columns_named_like_units_survive_outside_the_unit_slot(
         }
     )
 
-    native = yaml.safe_load(convert_ossie_to_gsf(yaml.safe_dump(ossie)))
+    native = yaml.safe_load(convert_ossie_to_auto_ontology(yaml.safe_dump(ossie)))
     orders = next(
         table
         for database in native["data_layer"]["databases"]
@@ -707,15 +1167,19 @@ def test_columns_named_like_units_survive_outside_the_unit_slot(
 
 def test_malformed_native_snapshot_fails_alike_in_both_paths() -> None:
     """Indexing and relationship reconciliation read the same snapshot."""
-    native = yaml.safe_load(_gsf_yaml())
+    native = yaml.safe_load(_auto_ontology_yaml())
     native["data_layer"]["databases"].append(
         deepcopy(native["data_layer"]["databases"][0])
     )
 
-    with pytest.raises(GSFConversionError, match="Malformed NVIDIA_GSF"):
+    with pytest.raises(
+        AutoOntologyConversionError, match="Malformed NVIDIA_AUTO_ONTOLOGY"
+    ):
         _index_native_document(native)
 
-    with pytest.raises(GSFConversionError, match="Malformed NVIDIA_GSF"):
+    with pytest.raises(
+        AutoOntologyConversionError, match="Malformed NVIDIA_AUTO_ONTOLOGY"
+    ):
         _reconcile_native_relationships(
             native,
             represented_table_ids=set(),
@@ -725,11 +1189,11 @@ def test_malformed_native_snapshot_fails_alike_in_both_paths() -> None:
         )
 
 
-def test_expression_dialect_follows_the_gsf_connection() -> None:
-    native = yaml.safe_load(_gsf_yaml())
+def test_expression_dialect_follows_the_auto_ontology_connection() -> None:
+    native = yaml.safe_load(_auto_ontology_yaml())
     native["data_layer"]["databases"][0]["dialect"] = "snowflake"
 
-    ossie = yaml.safe_load(convert_gsf_to_ossie(yaml.safe_dump(native)))
+    ossie = yaml.safe_load(convert_auto_ontology_to_ossie(yaml.safe_dump(native)))
     orders = next(
         dataset
         for dataset in ossie["datasets"]
@@ -746,10 +1210,10 @@ def test_expression_dialect_follows_the_gsf_connection() -> None:
 
 
 def test_dialects_ossie_cannot_name_stay_ansi() -> None:
-    native = yaml.safe_load(_gsf_yaml())
+    native = yaml.safe_load(_auto_ontology_yaml())
     native["data_layer"]["databases"][0]["dialect"] = "mysql"
 
-    ossie = yaml.safe_load(convert_gsf_to_ossie(yaml.safe_dump(native)))
+    ossie = yaml.safe_load(convert_auto_ontology_to_ossie(yaml.safe_dump(native)))
     orders = next(
         dataset
         for dataset in ossie["datasets"]
@@ -774,8 +1238,8 @@ def test_every_mappable_datatype_survives_a_round_trip(datatype: str) -> None:
         "datatype"
     ] = datatype
 
-    native = convert_ossie_to_gsf(yaml.safe_dump(ossie))
-    restored = yaml.safe_load(convert_gsf_to_ossie(native))
+    native = convert_ossie_to_auto_ontology(yaml.safe_dump(ossie))
+    restored = yaml.safe_load(convert_auto_ontology_to_ossie(native))
     field = next(
         item
         for dataset in restored["datasets"]
@@ -827,8 +1291,8 @@ def test_physical_types_map_onto_the_ossie_vocabulary(
     assert _ossie_datatype(sql_type) == expected
 
 
-def test_gsf_column_types_reach_the_ossie_field() -> None:
-    native = yaml.safe_load(_gsf_yaml())
+def test_auto_ontology_column_types_reach_the_ossie_field() -> None:
+    native = yaml.safe_load(_auto_ontology_yaml())
     orders = next(
         table
         for database in native["data_layer"]["databases"]
@@ -839,7 +1303,7 @@ def test_gsf_column_types_reach_the_ossie_field() -> None:
     for column in orders["columns"]:
         column["type"] = "NUMBER(38,0)" if column["name"] == "order_id" else "TEXT"
 
-    ossie = yaml.safe_load(convert_gsf_to_ossie(yaml.safe_dump(native)))
+    ossie = yaml.safe_load(convert_auto_ontology_to_ossie(yaml.safe_dump(native)))
     fields = {
         field["name"]: field.get("datatype")
         for dataset in ossie["datasets"]
@@ -849,13 +1313,13 @@ def test_gsf_column_types_reach_the_ossie_field() -> None:
 
     assert fields["order_id"] == "Integer"
     assert fields["customer_id"] == "String"
-    # A computed attribute has no column, so GSF holds no type for it.
+    # A computed attribute has no column, so Auto Ontology holds no type for it.
     assert fields["net_total"] is None
 
 
-def test_a_live_gsf_column_type_outranks_an_ossie_datatype() -> None:
-    """GSF reports the physical type; Ossie only names a logical one."""
-    native = yaml.safe_load(_gsf_yaml())
+def test_a_live_auto_ontology_column_type_outranks_an_ossie_datatype() -> None:
+    """Auto Ontology reports the physical type; Ossie only names a logical one."""
+    native = yaml.safe_load(_auto_ontology_yaml())
     orders = next(
         table
         for database in native["data_layer"]["databases"]
@@ -867,7 +1331,7 @@ def test_a_live_gsf_column_type_outranks_an_ossie_datatype() -> None:
         "type"
     ] = "NUMBER(38,0)"
 
-    ossie = yaml.safe_load(convert_gsf_to_ossie(yaml.safe_dump(native)))
+    ossie = yaml.safe_load(convert_auto_ontology_to_ossie(yaml.safe_dump(native)))
     next(
         field
         for dataset in ossie["datasets"]
@@ -876,7 +1340,7 @@ def test_a_live_gsf_column_type_outranks_an_ossie_datatype() -> None:
         if field["name"] == "order_id"
     )["datatype"] = "String"
 
-    restored = yaml.safe_load(convert_ossie_to_gsf(yaml.safe_dump(ossie)))
+    restored = yaml.safe_load(convert_ossie_to_auto_ontology(yaml.safe_dump(ossie)))
     column = next(
         column
         for database in restored["data_layer"]["databases"]
@@ -889,19 +1353,23 @@ def test_a_live_gsf_column_type_outranks_an_ossie_datatype() -> None:
     assert column["type"] == "NUMBER(38,0)"
 
 
-def test_old_fictional_gsf_root_is_rejected() -> None:
+def test_old_fictional_auto_ontology_root_is_rejected() -> None:
     old_shape = {
         "version": "1.0",
         "model": {"name": "sales"},
         "terms": [],
     }
 
-    with pytest.raises(GSFConversionError, match="Unsupported GSF root"):
-        convert_gsf_to_ossie(yaml.safe_dump(old_shape))
+    with pytest.raises(
+        AutoOntologyConversionError, match="Unsupported Auto Ontology root"
+    ):
+        convert_auto_ontology_to_ossie(yaml.safe_dump(old_shape))
 
 
 def test_model_name_override() -> None:
-    result = yaml.safe_load(convert_gsf_to_ossie(_gsf_yaml(), model_name="sales"))
+    result = yaml.safe_load(
+        convert_auto_ontology_to_ossie(_auto_ontology_yaml(), model_name="sales")
+    )
     assert result["name"] == "sales"
 
 
@@ -953,17 +1421,17 @@ def test_cli_converts_native_files(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     ossie_path = tmp_path / "model.yaml"
-    gsf_path = tmp_path / "model.gsf.yaml"
+    auto_ontology_path = tmp_path / "model.auto_ontology.yaml"
     ossie_path.write_text(_ossie_yaml(), encoding="utf-8")
 
-    main(["export", "-i", str(ossie_path), "-o", str(gsf_path)])
-    assert set(yaml.safe_load(gsf_path.read_text(encoding="utf-8"))) == {
+    main(["export", "-i", str(ossie_path), "-o", str(auto_ontology_path)])
+    assert set(yaml.safe_load(auto_ontology_path.read_text(encoding="utf-8"))) == {
         "data_layer",
         "semantic_layer",
         "zones",
     }
 
-    main(["import", "-i", str(gsf_path), "--name", "sales"])
+    main(["import", "-i", str(auto_ontology_path), "--name", "sales"])
     output = yaml.safe_load(capsys.readouterr().out)
     assert output["version"] == OSSIE_VERSION
     assert output["name"] == "sales"
@@ -974,8 +1442,8 @@ def test_rejects_legacy_wrapper_even_with_root_model(wrapper: Any) -> None:
     document = yaml.safe_load(_ossie_yaml())
     document["semantic_model"] = wrapper
 
-    with pytest.raises(GSFConversionError, match="at the root"):
-        convert_ossie_to_gsf(yaml.safe_dump(document))
+    with pytest.raises(AutoOntologyConversionError, match="at the root"):
+        convert_ossie_to_auto_ontology(yaml.safe_dump(document))
 
 
 @pytest.mark.parametrize("property_name", ["dialects", "vendors"])
@@ -983,5 +1451,7 @@ def test_rejects_removed_root_metadata(property_name: str) -> None:
     document = yaml.safe_load(_ossie_yaml())
     document[property_name] = []
 
-    with pytest.raises(GSFConversionError, match="Unsupported Ossie root properties"):
-        convert_ossie_to_gsf(yaml.safe_dump(document))
+    with pytest.raises(
+        AutoOntologyConversionError, match="Unsupported Ossie root properties"
+    ):
+        convert_ossie_to_auto_ontology(yaml.safe_dump(document))

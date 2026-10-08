@@ -85,7 +85,7 @@ The Ossie specification currently defines extensions for the following vendors:
 | `DATABRICKS` | Databricks semantic layer |
 | `OMNI` | Omni semantic model |
 | `WISDOM` | WisdomAI domain |
-| `NVIDIA_GSF` | NVIDIA Generative Semantic Fabric standalone YAML |
+| `NVIDIA_AUTO_ONTOLOGY` | NVIDIA Auto Ontology model document YAML (formerly `NVIDIA_GSF`) |
 | `SIGMA` | Sigma Computing data model |
 | `THOUGHTSPOT` | ThoughtSpot TML (Model + Table/SQL View) |
 | `CUBE` | Cube data model |
@@ -302,7 +302,9 @@ Given the [TPC-DS example](../examples/tpcds_semantic_model.yaml) included in th
 
 ## Contributing a New Converter
 
-To add support for a new vendor:
+The main Ossie repository does not accept new converters. Develop new semantic model and ontology converters in a separate repository. For Apache Ossie hosting, use the [ossie-converters repository](https://github.com/apache/ossie-converters) and coordinate contributions on `dev@ossie.apache.org`. See [Converter Contributions](../CONTRIBUTING.md#converter-contributions) for details.
+
+To add support for a new vendor, in your own repository or in `ossie-converters`:
 
 1. Use a stable `vendor_name` string in each custom extension emitted by the converter.
 2. Define the custom extension schema for the vendor (what vendor-specific metadata fields are supported in the `data` JSON).
